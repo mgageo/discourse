@@ -17,8 +17,8 @@ phpbb2_url <- "https://www.forum-bretagne-vivante.org/"
 phpbb2_dir <- sprintf("%s/phpbb2", varDir)
 dir.create(phpbb2_dir, showWarnings = FALSE, recursive = TRUE)
 #
-# source("geo/scripts/discourse.R");phpbb2_sommaire(force = FALSE)
-phpbb2_sommaire <- function(force = FALSE) {
+# source("geo/scripts/discourse.R");phpbb2_sommaire_get(force = FALSE) %>% glimpse()
+phpbb2_sommaire_get <- function(force = FALSE) {
   library(tidyverse)
   library(httr2)
   library(rvest)
@@ -74,12 +74,7 @@ phpbb2_sommaire <- function(force = FALSE) {
     messages <- cols[k + 4] %>%
       html_text() |>
       str_trim()
-    detail <- cols[k + 5] %>%
-      html_text(trim = TRUE)
-    detail_auteur <- cols[k + 5] |>
-      html_element("strong") |>
-      html_text(trim = TRUE)
-    detail_date <- str_sub(detail, end = - (str_length(detail_auteur) + 1))
+    rc <- phpbb2_detail_sommaire(cols[k + 5])
 #    carp("i: %s", i)
     categories.df <- categories.df %>%
       add_row(
@@ -87,25 +82,41 @@ phpbb2_sommaire <- function(force = FALSE) {
         lien = lien_sujet,
         sujets = sujets,
         messages = messages,
-        detail = detail,
-        detail_auteur = detail_auteur,
-        detail_date = detail_date
+        detail = rc$detail,
+        detail_auteur = rc$detail_auteur,
+        detail_date = rc$detail_date
       )
   }
+  misc_ecrire(categories.df, "phpbb2_sommaire")
+  return(invisible(categories.df))
+}
+#
+# source("geo/scripts/discourse.R");phpbb2_sommaire(force = FALSE)
+phpbb2_sommaire <- function(force = FALSE) {
+  library(tidyverse)
+  library(lubridate)
+  phpbb2_sommaire_get(force = force)
+  categories.df <- misc_lire("phpbb2_sommaire")
   categories.df <- categories.df %>%
-    dplyr::select(titre, lien, sujets, messages)
-  glimpse(categories.df)
-  misc_print(categories.df)
+    dplyr::select(lien, detail_auteur, detail_date, sujets, messages)
   df1 <- categories.df %>%
     mutate(sujets = as.integer(sujets)) %>%
     mutate(messages = as.integer(messages)) %>%
-    summarize(
-      sujets = sum(sujets),
-      messages = sum(messages)
-    ) %>%
+#    adorn_totals() %>%
     glimpse()
   misc_print(df1)
-  misc_ecrire(categories.df, "phpbb2_sommaire")
+  depuis <- today() - lubridate::days(3)
+  df2 <- df1 %>%
+    filter(messages > 0) %>%
+    rowwise() %>%
+    mutate(d = phpbb2_date(texte = detail_date)) %>%
+#    filter(is.na(d)) %>%
+    filter(d > depuis) %>%
+    glimpse()
+  misc_print(df2)
+  for (i2 in 1:nrow(df2)) {
+    t.df <- phpbb2_categorie(df2[[i2, "lien"]], force = TRUE)
+  }
 }
 #
 # source("geo/scripts/discourse.R");phpbb2_sommaire_discourse()
@@ -159,11 +170,12 @@ phpbb2_categories <- function(force = FALSE) {
 #
 ## analyse d'une catégorie
 # en sortie tous les sujets "topics"
+# source("geo/scripts/discourse.R");phpbb2_categorie("/f3-news", force = TRUE)
 # source("geo/scripts/discourse.R");phpbb2_categorie("/f24p50-lepidopteres", force = TRUE)
 # source("geo/scripts/discourse.R");phpbb2_categorie("/f60-offre-d-emploi-et-de-stage", force = TRUE)
 # avec forum
 # source("geo/scripts/discourse.R");phpbb2_categorie("/f4-botanique", force = TRUE)
-phpbb2_categorie <- function(lien = "/f4-botanique", force = FALSE) {
+phpbb2_categorie <- function(lien = "/f3-news", force = FALSE) {
   library(tidyverse)
   library(httr2)
   library(rvest)
@@ -293,12 +305,7 @@ phpbb2_categorie_page <- function(page = page) {
     vues <- cols[6] %>%
       html_text() |>
       str_trim()
-    detail <- cols[7] %>%
-      html_text(trim = TRUE)
-    detail_auteur <- cols[7] |>
-      html_element("strong") |>
-      html_text(trim = TRUE)
-    detail_date <- str_sub(detail, end = - (str_length(detail_auteur) + 1))
+    rc <- phpbb2_detail_categorie(cols[7])
 #    carp("i: %s", i)
     topics.df <- topics.df %>%
       add_row(
@@ -306,9 +313,9 @@ phpbb2_categorie_page <- function(page = page) {
         titre = titre,
         lien = lien_sujet,
         auteur = auteur,
-        detail = detail,
-        detail_auteur = detail_auteur,
-#        detail_date = detail_date
+        detail = rc$detail,
+        detail_auteur = rc$detail_auteur,
+        detail_date = rc$detail_date
       )
   }
   return(invisible(topics.df))
@@ -415,14 +422,7 @@ phpbb2_sujet_page <- function(page = page) {
 #
 ## les fonctions utilaires
 #
-phpbb2_dump <- function(page) {
-  nodes <- page %>%
-    html_nodes("*")
-  for (i in 1:length(nodes)) {
-    n <- nodes[i]
-    carp("%s class: %s", i, n |> html_attr("class"))
-  }
-}
+#
 # source("geo/scripts/discourse.R");phpbb2_cache()
 phpbb2_cache <- function(lien = "/f39-heteroceres") {
   library(tidyverse)
@@ -436,7 +436,7 @@ phpbb2_cache <- function(lien = "/f39-heteroceres") {
   }
   req <- httr2::request(phpbb2_url)
   page <- req |>
-    req_user_agent("discourse mga") |>
+    req_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0") |>
     req_url_path_append(lien) |>
     req_error(is_error = \(resp) FALSE) |>
     req_perform() |>
@@ -444,3 +444,143 @@ phpbb2_cache <- function(lien = "/f39-heteroceres") {
   xml2::write_xml(page, file = dsn)
   return(invisible(page))
 }
+#
+# conversion d'une date en format phpBB2
+# source("geo/scripts/discourse.R");phpbb2_date() %>% glimpse()
+phpbb2_date <- function(texte = "Mar 13 Déc 2023") {
+#  carp("texte: %s", texte);
+  mois_B <- c("Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre")
+  mois_b <- c("Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc")
+  mois_m <- c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12")
+  mois <- setNames(mois_m, mois_b)
+  d <<- str_split(texte, " ")[[1]]
+  if (length(d) >= 4) {
+    mm <- mois[[d[[3]]]]
+    jjmmaaaa <- sprintf("%s %s %s", d[[2]], mm, d[[4]])
+  } else {
+    jjmmaaaa <- "01 01 2030"
+  }
+  d <- readr::parse_date(jjmmaaaa, format = "%d %m %Y")[1]
+  return(invisible(d))
+}
+# https://github.com/tidyverse/readr/issues/711
+phpbb2_date_v1 <- function(texte = "Mar 12 Déc 2023") {
+  mois_B <- c("Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre")
+  mois_b <- c("Jan", "Fév", "Mar", "Avr", "Mai", "Jun", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc")
+  mois_m <- c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12")
+  day_B <- c("Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samsedi")
+  day_b <- c("Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam")
+  mois_B <- enc2utf8(mois_B)
+  mois_b <- enc2utf8(mois_b)
+  day_B <- enc2utf8(day_B)
+  day_b <- enc2utf8(day_b)
+  phpbb <- locale(date_names(mois_B, mois_b, day_B, day_b))
+  d <- readr::parse_date(
+    texte,
+    format = "%d %m %Y",
+    locale = locale(date_names = phpbb, encoding = "Windows-1252")
+  )
+}
+#
+# extraction des champs d'une colonne detail
+phpbb2_detail_categorie <- function(detail) {
+    detail <- detail %>%
+      html_element("span span")
+    textes <- detail |> as.character()
+    if (is.na(textes)) {
+      detail_date <- ""
+      detail_auteur <- ""
+    } else {
+      details <- str_match(textes, '<br>(.*?)<br>(.*?)</span>')
+      detail_date <- details[1, 2]
+      detail_auteur <- detail %>%
+        html_element("strong") %>%
+        html_text()
+      if (is.na(detail_auteur)) {
+        detail_auteur <- details[1, 3]
+        detail_auteur <- str_replace(detail_auteur, '<.*$', '')
+      }
+#    carp("detail_date: %s", detail_date);stop("ùùùùùùùùù")
+      if (is.na(detail_auteur) | detail_auteur == "") {
+        carp("textes: %s", textes)
+        glimpse(details)
+        stop("ùùùùùùù")
+      }
+    }
+  detail <- detail %>%
+    html_text2()
+  rc <- list(
+    detail = detail,
+    detail_date = detail_date,
+    detail_auteur = detail_auteur,
+    textes = textes
+  )
+  return(invisible(rc))
+}
+#
+# extraction des champs d'une colonne detail
+phpbb2_detail_categorie <- function(detail) {
+  detail <- detail |>
+    html_element("span.postdetails")
+  textes <- detail %>%
+    as.character() %>%
+    glimpse()
+  detail_auteur <- detail %>%
+    html_element("strong") %>%
+    html_text2()
+  details <- str_match(textes, 'postdetails">(.*?)<br>')
+  detail_date <- details[1, 2]
+  rc <- list(
+    detail_date = detail_date,
+    detail_auteur = detail_auteur,
+    detail = textes
+  )
+#  glimpse(rc);stop("ùùùùùùùùùùùù")
+  return(invisible(rc))
+}
+#
+# extraction des champs d'une colonne detail
+phpbb2_detail_sommaire <- function(detail) {
+    detail <- detail %>%
+      html_element("span span")
+    textes <- detail |>
+      as.character()
+    if (is.na(textes)) {
+      detail_date <- ""
+      detail_auteur <- ""
+    } else {
+      details <- str_match(textes, '<br>(.*?)<br>(.*?)</span>')
+      detail_date <- details[1, 2]
+      detail_auteur <- detail %>%
+        html_element("strong") %>%
+        html_text()
+      if (is.na(detail_auteur)) {
+        detail_auteur <- details[1, 3]
+        detail_auteur <- str_replace(detail_auteur, '<.*$', '')
+      }
+#    carp("detail_date: %s", detail_date);stop("ùùùùùùùùù")
+      if (is.na(detail_auteur) | detail_auteur == "") {
+        carp("textes: %s", textes)
+        glimpse(details)
+        stop("ùùùùùùù")
+      }
+    }
+  detail <- detail %>%
+    html_text2()
+  rc <- list(
+    detail = detail,
+    detail_date = detail_date,
+    detail_auteur = detail_auteur,
+    textes = textes
+  )
+  return(invisible(rc))
+}
+phpbb2_dump <- function(page) {
+  nodes <- page %>%
+    html_nodes("*")
+  for (i in 1:length(nodes)) {
+    n <- nodes[i]
+    carp("%s class: %s", i, n |> html_attr("class"))
+  }
+}
+
